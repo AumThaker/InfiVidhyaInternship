@@ -1,4 +1,5 @@
 //   login , logout , register, createUser , activateUser , deactivateUser , changeDetails , changePassword
+import Otp, { hashOtp } from "../models/otpmodel.js"
 import User, { hashPassword } from "../models/usermodel.js"
 import { jwtSignIn, jwtVerify } from "../utility/jwtsign.js"
 import sendMail from "../utility/mail.js"
@@ -48,18 +49,21 @@ async function createUser(req, res) {
             hashedPassword,
             role,
             mobile_no,
-            otp,
         }
         let signedUser = await jwtSignIn(user)
         if (!signedUser) return res.status(400).json({ message: "JWT SIGN USER FAILED", success: false })
 
-        let cookieOptions = {
-            httpOnly: true,
-            secure: false,
-            expires: new Date(Date.now() + 10 * 60 * 1000)
-        }
+        let hashedOtp = await hashOtp(String(otp))
+        if (!hashedOtp) return res.status(400).json({ message: "ACCOUNT CREATION - OTP SECURITY ISSUE", success: false })
 
-        return res.status(200).cookie('temp_user', signedUser, cookieOptions).json({ message: "USER DATA ACQUIRED -> OTP VERIFICATION", success: true })
+        const otpData = await Otp.create({
+            otp: hashedOtp,
+            user: signedUser
+        })
+
+        if (!otpData) return res.status(400).json({ message: "ACCOUNT CREATION - OTP DATABASE FAILED", success: false })
+
+        return res.status(200).json({ message: "USER DATA ACQUIRED -> OTP VERIFICATION", success: true, otpId: otpData._id })
 
     } catch (error) {
         return res.status(500).json({ message: `ERROR WHILE CREATING USER : ${error.message}`, success: false })
@@ -71,8 +75,17 @@ async function createUser(req, res) {
 // user creation
 async function registerUser(req, res) {
     try {
-        const { otpEntered } = req.body
-        const signedUser = req.cookies['temp_user']
+        const { otpEntered, otpId } = req.body
+
+        const otpData = await Otp.findById(otpId)
+        if (!otpData) return res.status(404).json({ message: "OTP VALIDITY EXPIRED", success: false })
+
+        if (otpData.otpAttempts > 2) {
+            await Otp.deleteOne({ _id: otpId })
+            return res.status(400).json({ message: "OTP ATTEMPT EXCEEDED RESEND OTP", success: false })
+        }
+
+        let signedUser = otpData.user
 
         // otp , signedUser validation
         if (!otpEntered) return res.status(400).json({ message: "ENTER 6-DIGIT OTP", success: false })
@@ -82,8 +95,13 @@ async function registerUser(req, res) {
         let user = await jwtVerify(signedUser)
         if (!user) return res.status(400).json({ message: "USER UNSIGN ERROR", success: false })
 
-        // checking otp
-        if (String(otpEntered) !== String(user.otp)) return res.status(400).json({ message: "INVALID OTP ENTERED", success: false })
+        // compare otp
+        let otp = await otpData.compareOtp(String(otpEntered))
+        if (!otp) {
+            otpData.otpAttempts = otpData.otpAttempts + 1
+            await otpData.save()
+            return res.status(400).json({ message: "INVALID OTP", success: false })
+        }
 
         const { first_name, last_name, email, hashedPassword, role, mobile_no } = user
 
@@ -92,13 +110,15 @@ async function registerUser(req, res) {
         if (existingUser) return res.status(400).json({ message: "EMAIL ALREADY EXISTS", success: false })
 
         // registering user into database
-        let userCreation = await User.create({ first_name, last_name, email, password, role, mobile_no })
+        let userCreation = await User.create({ first_name, last_name, email, password:hashedPassword, role, mobile_no })
         if (!userCreation) return res.status(400).json({ message: "USER CREATION ERROR", success: false })
 
         let mail = await sendMail(email, "ACCOUNT CREATION MAIL", 'ACCOUNT CREATED SUCCESSFULLY')
         if (!mail) return res.status(400).json({ message: "ACCOUNT CREATION FAILED", success: false })
 
-        return res.status(200).clearCookie('temp_user').json({ message: "USER SUCCESSFULLY CREATED", success: true })
+        await Otp.deleteOne({ _id: otpId })
+
+        return res.status(200).json({ message: "USER SUCCESSFULLY CREATED", success: true })
     } catch (error) {
         return res.status(500).json({ message: `USER CREATION ERROR : ${error.message}`, success: false })
     }
@@ -146,6 +166,10 @@ async function loginUser(req, res) {
 }
 
 async function logoutUser(req, res) {
+    const userId = req.user
+    await User.findByIdAndUpdate(userId, {
+        access_token: false
+    })
     return res
         .status(200)
         .clearCookie('access_token', {
@@ -251,7 +275,7 @@ async function changePasswordSendOtp(req, res) {
     try {
 
         const userId = req.user
-        const user = await User.findById(userId, { _id: 1 , email:1 })
+        const user = await User.findById(userId, { _id: 1, email: 1 })
         if (!user) return res.status(404).json({ message: "CHANGE PASSWORD - USER NOT FOUND", success: false })
 
         let otp = await createOtp()
@@ -260,15 +284,17 @@ async function changePasswordSendOtp(req, res) {
         let mail = await sendMail(user.email, "USER PASSWORD CHANGE - OTP SENT VALID FOR 10 MINUTES", `OTP : ${otp} `)
         if (!mail) return res.status(400).json({ message: "USER PASSWORD CHANGE FAILED", success: false })
 
-        let otpData = await jwtSignIn({ otp, userId })
+        let hashedOtp = await hashOtp(String(otp))
+        if (!hashedOtp) return res.status(400).json({ message: "ACCOUNT CREATION - OTP SECURITY ISSUE", success: false })
 
-        const cookieOptions = {
-            httpOnly: true,
-            secure: true,
-            expires: new Date(Date.now() + 10 * 60 * 1000)
-        }
+        const otpData = await Otp.create({
+            otp: hashedOtp,
+            user: user._id
+        })
 
-        return res.status(200).cookie('pass-change', otpData, cookieOptions).json({ message: "PASSWORD CHANGE SUCCESSFULL", success: true })
+        if (!otpData) return res.status(400).json({ message: "ACCOUNT CREATION - OTP DATABASE FAILED", success: false })
+
+        return res.status(200).json({ message: "PASSWORD CHANGE SUCCESSFULL", success: true, otpId: otpData._id })
     } catch (error) {
         return res.status(500).json({ message: `USER PASSWORD CHANGE ERROR : ${error.message}`, success: false })
     }
@@ -277,28 +303,42 @@ async function changePasswordSendOtp(req, res) {
 
 async function updatePass(req, res) {
     try {
-        const { otpEntered, passwordEntered } = req.body
+        const { otpEntered, passwordEntered, otpId } = req.body
         const userId = req.user
-        const otpData = req.cookies['pass-change']
-        const user = await User.findById(userId).select('+password')
+
+        const otpData = await Otp.findById(otpId)
+        if (!otpData) return res.status(404).json({ message: "OTP VALIDITY EXPIRED", success: false })
+
+        if(otpData.otpAttempts > 2){
+            await Otp.deleteOne({_id:otpId})
+            return res.status(400).json({message:"OTP ATTEMPTS EXCEEDED RESEND OTP",success:false})
+        }
+
+        const user = await User.findById(userId).select('+password +_id')
         if (!user) return res.status(404).json({ message: "CHANGE PASSWORD - USER NOT FOUND", success: false })
-        const {  otp, userId: id } = await jwtVerify(otpData)
-        if (!otp || !id) return res.status(400).json({ message: "USER PASSWORD UPDATE ERROR - OTP AND ID NOT FOUND", success: false })
-        if (id !== userId) return res.status(403).clearCookie('pass-change').clearCookie('access-token').json({ message: "UNAUTHORISED ACCESS", success: false })
-        if (String(otpEntered) !== String(otp)) return res.status(400).json({ message: "INVALID OTP", success: false })
-        const passRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,}$/
+        if (user._id.toString() !== otpData.user.toString()) return res.status(403).json({ message: "UNAUTHORISED USER", success: false })
+
+        let otpCompare = await otpData.compareOtp(String(otpEntered))
+        if (!otpCompare) {
+            otpData.otpAttempts = otpData.otpAttempts + 1
+            await otpData.save()
+            return res.status(400).json({ message: "INVALID OTP ENTERED", success: false })
+        }
+
+        const passRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,16}$/
         if (!passRegex.test(passwordEntered)) return res.status(400).json({ message: "PASSWORD SHOULD CONTAIN 1 UPPERCASE , 1 LOWERCASE , 1 SPECIAL SYMBOL , 1 DIGIT , LENGTH SHOULD BE 8-16", success: false })
         const hashedPassword = await hashPassword(passwordEntered)
         if (!hashedPassword) return res.status(400).json({ message: "USER PASSWORD UPDATE - PASSWORD HASH FAILED", success: false })
         user.password = hashedPassword
         user.access_token = false
         await user.save()
+        await Otp.deleteOne({_id:otpId})
         // login again
-        return res.status(200).clearCookie('pass-change').clearCookie('access_token').json({ message: "USER PASSWORD UPDATE SUCCESSFULL", success: true })
+        return res.status(200).clearCookie('access_token').json({ message: "USER PASSWORD UPDATE SUCCESSFULL", success: true })
     } catch (error) {
         return res.status(500).json({ message: `USER PASSWORD UPDATE ERROR : ${error.message}`, success: false })
     }
 }
 
 
-export {createUser,registerUser,loginUser,logoutUser,activateUser,deactivateUser,changeDetails,changePasswordSendOtp,updatePass}
+export { createUser, registerUser, loginUser, logoutUser, activateUser, deactivateUser, changeDetails, changePasswordSendOtp, updatePass }
