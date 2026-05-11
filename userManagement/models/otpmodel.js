@@ -1,11 +1,11 @@
 import mongoose from 'mongoose'
+import bcrypt from 'bcrypt'
 
 
 const otpSchema = new mongoose.Schema({
     otp:{
         type:String,
         required:true,
-        maxLength:6,
     },
     user:{
         type:String || mongoose.Schema.Types.ObjectId,
@@ -30,7 +30,7 @@ export async function hashOtp(otp){
 
 
 otpSchema.methods.compareOtp = async function(otpEntered) {
-    return await bcrypt.compare(otpEntered, this.otp)
+    return await bcrypt.compare(otpEntered, String(this.otp))
 }
 
 const Otp = mongoose.model('Otp',otpSchema)

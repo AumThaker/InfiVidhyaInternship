@@ -1,7 +1,7 @@
-//   login , logout , register, createUser , activateUser , deactivateUser , changeDetails , changePassword
+//   login , logout , register, createUser , activateUser , deactivateUser , changeDetails , changePassword , refreshAccessToken
 import Otp, { hashOtp } from "../models/otpmodel.js"
 import User, { hashPassword } from "../models/usermodel.js"
-import { jwtSignIn, jwtVerify } from "../utility/jwtsign.js"
+import { generateARToken, jwtSignIn, jwtVerify, verifyARToken } from "../utility/jwtsign.js"
 import sendMail from "../utility/mail.js"
 import createOtp from "../utility/otpCreation.js"
 
@@ -11,7 +11,7 @@ async function createUser(req, res) {
         const { first_name, last_name, email, password, role, mobile_no } = req.body
 
         // all required fields
-        if (!first_name || !last_name || !email || !password || !role || !mobile_no) return res.status(400).json({ message: "ALL REQUIRED FIELDS TO BE FILLED" })
+        if (!first_name || !last_name || !email || !password || !role || !mobile_no) return res.status(400).json({ message: "ALL REQUIRED FIELDS TO BE FILLED" , success:false })
 
         // unique email check
         let emailAlreadyExists = await User.findOne({ email }, { email: 1, _id: 0 })
@@ -71,7 +71,6 @@ async function createUser(req, res) {
 
 
 }
-
 // user creation
 async function registerUser(req, res) {
     try {
@@ -123,7 +122,6 @@ async function registerUser(req, res) {
         return res.status(500).json({ message: `USER CREATION ERROR : ${error.message}`, success: false })
     }
 }
-
 async function loginUser(req, res) {
     try {
         const { email, password } = req.body
@@ -135,36 +133,42 @@ async function loginUser(req, res) {
         const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
         if (!emailRegex.test(email)) return res.status(400).json({ message: "ENTER VALID EMAIL ID", success: false })
 
-        const user = await User.findOne({ email })
+        const user = await User.findOne({ email }).select("+password")
         if (!user) return res.status(400).json({ message: "INVALID CREDENTIALS", success: false })
 
-        const isMatch = await user.comparePassword(password)
+        const isMatch = await user.comparePassword(String(password))
         if (!isMatch) return res.status(400).json({ message: "INVALID CREDENTIALS", success: false })
 
         const activeStatus = user.active_status
         if (!activeStatus) return res.status(400).json({ message: "USER NOT ACTIVE", success: false, userActive: false })
 
-        const accessToken = await jwtSignIn({ userId: user._id, role: user.role }, { expiresIn: '7d' })
+        const refreshToken = await generateARToken({id:user._id},process.env.REFRESH_SECRET,"7d")
+        const accessToken = await generateARToken({id:user._id,role:user.role},process.env.ACCESS_SECRET,"15m")
 
         user.access_token = true
         await user.save()
 
-        let cookieOptions = {
+        let refreshcookieOptions = {
             httpOnly: true,
             secure: false,
-            expires: new Date(Date.now() + 7 * 86400000)
+            expires: new Date(Date.now() + 7 * 86400000) // 7 days
+        }
+        let accesscookieOptions = {
+            httpOnly: true,
+            secure: false,
+            expires: new Date(Date.now() + 900000) // 15 minutes
         }
 
         return res
             .status(200)
-            .cookie('access_token', accessToken, cookieOptions)
+            .cookie('access_token', accessToken, accesscookieOptions)
+            .cookie('refresh_token', refreshToken, refreshcookieOptions)
             .json({ message: "USER LOGGED IN SUCCESSFULLY", success: true })
 
     } catch (error) {
         return res.status(500).json({ message: `LOGIN ERROR : ${error.message}`, success: false })
     }
 }
-
 async function logoutUser(req, res) {
     const userId = req.user
     await User.findByIdAndUpdate(userId, {
@@ -176,9 +180,12 @@ async function logoutUser(req, res) {
             httpOnly: true,
             secure: true,
         })
+        .clearCookie('refresh_token', {
+            httpOnly: true,
+            secure: true,
+        })
         .json({ message: "SUCCESSFULLY LOGGED OUT", success: true })
 }
-
 async function activateUser(req, res) {
     try {
         const { email, password } = req.body
@@ -190,15 +197,15 @@ async function activateUser(req, res) {
         const emailRegex = /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/;
         if (!emailRegex.test(email)) return res.status(400).json({ message: "ENTER VALID EMAIL ID", success: false })
 
-        const user = await User.findOne({ email })
+        const user = await User.findOne({ email }).select("+password")
         if (!user) return res.status(400).json({ message: "INVALID CREDENTIALS", success: false })
 
-        if (user.active_status) {
-            return res.status(400).json({ message: "USER ALREADY ACTIVE", success: false })
-        }
-
-        const isMatch = await user.comparePassword(password)
+        const isMatch = await user.comparePassword(String(password))
         if (!isMatch) return res.status(400).json({ message: "INVALID CREDENTIALS", success: false })
+
+        if (user.active_status) {
+            return res.status(200).json({ message: "USER ALREADY ACTIVE", success: true })
+        }
 
         user.active_status = true
         await user.save()
@@ -211,7 +218,6 @@ async function activateUser(req, res) {
         return res.status(500).json({ message: `USER ACTIVATION ERROR : ${error.message}`, success: false })
     }
 }
-
 async function deactivateUser(req, res) {
     try {
         const userId = req.user
@@ -232,12 +238,15 @@ async function deactivateUser(req, res) {
                 httpOnly: true,
                 secure: true,
             })
+            .clearCookie('refresh_token', {
+                httpOnly: true,
+                secure: true,
+            })
             .json({ message: "SUCCESSFULLY DEACTIVATED AND LOGGED OUT", success: true })
     } catch (error) {
         return res.status(500).json({ message: `USER DEACTIVATION ERROR : ${error.message}`, success: false })
     }
 }
-
 // for changing firstname , lastname , mobileno 
 async function changeDetails(req, res) {
     try {
@@ -252,10 +261,10 @@ async function changeDetails(req, res) {
             if (!mobRegex.test(value)) return res.status(400).json({ message: "MOBILE NUMBER SHOULD BE OF 10 DIGITS", success: false })
         }
 
-        const user = await User.findById(userId)
+        const user = await User.findById(userId).select("+password")
         if (!user) return res.status(400).json({ message: "USER NOT FOUND", success: false })
 
-        let passCheck = await user.comparePassword(password)
+        let passCheck = await user.comparePassword(String(password))
         if (!passCheck) return res.status(400).json({ message: "USER DETAILS UPDATION - INCORRECT PASSWORD ENTERED", success: false })
 
         user[field] = value
@@ -270,7 +279,6 @@ async function changeDetails(req, res) {
     }
 
 }
-
 async function changePasswordSendOtp(req, res) {
     try {
 
@@ -294,13 +302,12 @@ async function changePasswordSendOtp(req, res) {
 
         if (!otpData) return res.status(400).json({ message: "ACCOUNT CREATION - OTP DATABASE FAILED", success: false })
 
-        return res.status(200).json({ message: "PASSWORD CHANGE SUCCESSFULL", success: true, otpId: otpData._id })
+        return res.status(200).json({ message: "USER PASSWORD CHANGE OTP CHANGE", success: true, otpId: otpData._id })
     } catch (error) {
         return res.status(500).json({ message: `USER PASSWORD CHANGE ERROR : ${error.message}`, success: false })
     }
 
 }
-
 async function updatePass(req, res) {
     try {
         const { otpEntered, passwordEntered, otpId } = req.body
@@ -327,18 +334,67 @@ async function updatePass(req, res) {
 
         const passRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[@$!%*?&])[A-Za-z\d@$!%*?&]{8,16}$/
         if (!passRegex.test(passwordEntered)) return res.status(400).json({ message: "PASSWORD SHOULD CONTAIN 1 UPPERCASE , 1 LOWERCASE , 1 SPECIAL SYMBOL , 1 DIGIT , LENGTH SHOULD BE 8-16", success: false })
-        const hashedPassword = await hashPassword(passwordEntered)
+        const hashedPassword = await hashPassword(String(passwordEntered))
         if (!hashedPassword) return res.status(400).json({ message: "USER PASSWORD UPDATE - PASSWORD HASH FAILED", success: false })
         user.password = hashedPassword
         user.access_token = false
         await user.save()
         await Otp.deleteOne({_id:otpId})
         // login again
-        return res.status(200).clearCookie('access_token').json({ message: "USER PASSWORD UPDATE SUCCESSFULL", success: true })
+        return res.status(200).clearCookie('access_token').clearCookie('refresh_token').json({ message: "USER PASSWORD UPDATE SUCCESSFULL", success: true })
     } catch (error) {
         return res.status(500).json({ message: `USER PASSWORD UPDATE ERROR : ${error.message}`, success: false })
     }
 }
+async function regenerateAccessToken(req,res){
+    try {
+        const refreshToken = req.cookies.refresh_token
 
+        if (!refreshToken) {
+            return res.status(401).json({
+                message: "LOGIN IN TO ACCESS"
+            })
+        }
 
-export { createUser, registerUser, loginUser, logoutUser, activateUser, deactivateUser, changeDetails, changePasswordSendOtp, updatePass }
+        const decoded = await verifyARToken(
+            refreshToken,
+            process.env.REFRESH_SECRET
+        )
+
+        const user = await User.findById(decoded.id)
+
+        if (!user) {
+            return res.status(404).json({
+                message: "USER NOT FOUND"
+            })
+        }
+
+        const newAccessToken = await generateARToken(
+            {
+                id: user._id,
+                role: user.role
+            },
+            process.env.ACCESS_SECRET,
+            "15m"
+        )
+
+        res.cookie("access_token", newAccessToken, {
+            httpOnly: true,
+            secure: false,
+            sameSite: "strict",
+            maxAge: 15 * 60 * 1000
+        })
+
+        return res.status(200).json({
+            message: "NEW ACCESS TOKEN GENERATED"
+        })
+
+    } catch (error) {
+
+        return res.status(403).json({
+            message: "INVALID REFRESH TOKEN"
+        })
+    }
+}
+
+export { createUser, registerUser, loginUser, logoutUser, activateUser, deactivateUser, changeDetails, changePasswordSendOtp, updatePass, regenerateAccessToken }

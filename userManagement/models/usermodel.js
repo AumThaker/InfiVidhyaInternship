@@ -78,8 +78,9 @@ export async function hashPassword(password){
 
 // compare password
 userSchema.methods.comparePassword = async function(passwordEntered) {
-    return await bcrypt.compare(passwordEntered, this.password)
+    return await bcrypt.compare(passwordEntered, String(this.password))
 }
+
 
 let User = mongoose.model('User', userSchema)
 

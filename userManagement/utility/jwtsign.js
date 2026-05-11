@@ -10,4 +10,15 @@ async function jwtVerify(code){
     return result
 }
 
-export {jwtSignIn,jwtVerify}
+async function generateARToken(payload,secret,expiry){
+    const result = await jwt.sign(payload,secret,{expiresIn : expiry})
+    return result
+}
+
+async function verifyARToken(code,secret){
+    const result = await jwt.verify(code,secret)
+    return result
+}
+
+
+export {jwtSignIn,jwtVerify,generateARToken,verifyARToken}

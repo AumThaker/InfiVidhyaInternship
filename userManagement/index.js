@@ -37,4 +37,4 @@ serverConnection()
 
 // implementing routes
 import userRouter from './routes/userroute.js'
-app.post('/api/user',userRouter)
+app.use('/api/user',userRouter)
