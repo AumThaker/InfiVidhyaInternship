@@ -5,6 +5,28 @@ import { generateARToken, jwtSignIn, jwtVerify, verifyARToken } from "../utility
 import sendMail from "../utility/mail.js"
 import createOtp from "../utility/otpCreation.js"
 
+
+const googleLoginSuccess = async (req, res) => {
+
+  const user = req.user;
+
+  const accessToken = generateARToken({id: user._id,role:user.role},process.env.ACCESS_TOKEN_SECRET,"15m");
+
+  const refreshToken = jwt.sign({id: user._id,},process.env.REFRESH_TOKEN_SECRET,"7d");
+
+  res.cookie('access_token', accessToken, {
+    httpOnly: true,
+  });
+
+  res.cookie('refresh_token', refreshToken, {
+    httpOnly: true,
+  });
+
+  res.json({
+    message: "Google Login Successful",
+    success:true
+  });
+};
 // temp user created
 async function createUser(req, res) {
     try {
@@ -397,4 +419,4 @@ async function regenerateAccessToken(req,res){
     }
 }
 
-export { createUser, registerUser, loginUser, logoutUser, activateUser, deactivateUser, changeDetails, changePasswordSendOtp, updatePass, regenerateAccessToken }
+export { createUser, registerUser, loginUser, logoutUser, activateUser, deactivateUser, changeDetails, changePasswordSendOtp, updatePass, regenerateAccessToken, googleLoginSuccess }

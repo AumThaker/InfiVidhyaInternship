@@ -21,6 +21,7 @@ import bcrypt from 'bcrypt'
 
 // user model
 const userSchema = new mongoose.Schema({
+    googleId: { type: String },
     first_name: {
         type: String,
         required: true,
@@ -55,16 +56,15 @@ const userSchema = new mongoose.Schema({
     },
     mobile_no: {
         type: String,
-        required: true,
         match: [/^[0-9]{10}$/, 'Mobile must be 10 digits']
     },
     active_status: {
         type: Boolean,
         default: true
     },
-    access_token:{
-        type:Boolean,
-        default:false
+    access_token: {
+        type: Boolean,
+        default: false
     }
 }, { timestamps: true })
 
@@ -72,12 +72,12 @@ const userSchema = new mongoose.Schema({
 userSchema.index({ email: 1, first_name: 1 })
 
 // password hashing
-export async function hashPassword(password){
+export async function hashPassword(password) {
     return await bcrypt.hash(password, 10)
 }
 
 // compare password
-userSchema.methods.comparePassword = async function(passwordEntered) {
+userSchema.methods.comparePassword = async function (passwordEntered) {
     return await bcrypt.compare(passwordEntered, String(this.password))
 }
 

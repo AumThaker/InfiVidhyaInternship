@@ -3,6 +3,8 @@ import dotenv from 'dotenv'
 import cookieParser from 'cookie-parser'
 import cors from 'cors'
 import connectDB from './db.js'
+import session from "express-session";
+import passport from "./config/passport.js";
 
 
 // environement variable configuration
@@ -20,6 +22,18 @@ app.use(cors(corsOption))
 app.use(cookieParser())
 app.use(express.json())
 app.use(express.urlencoded({extended:true }))
+app.use(
+  session({
+    secret: "secretkey",
+    resave: false,
+    saveUninitialized: false,
+  })
+);
+
+app.use(passport.initialize());
+
+app.use(passport.session());
+
 
 
 // server connection along with database
